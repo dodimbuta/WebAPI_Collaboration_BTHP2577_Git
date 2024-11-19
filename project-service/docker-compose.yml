@@ -1,0 +1,29 @@
+version: '3.4'
+
+services:
+  userservice:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    ports:
+      - "5001:80"
+    environment:
+      - ConnectionStrings__DefaultConnection=Server=localhost;Database=MicroServiceBTHDb;TrustServerCertificate=True; Trusted_Connection=True;MultipleActiveResultSets=true;
+
+  projectservice:
+    build:
+      context: ./project-service
+      dockerfile: Dockerfile
+    ports:
+      - "5002:80"
+    environment:
+      - ConnectionStrings__DefaultConnection=Server=localhost;Database=MicroServiceBTHDb;TrustServerCertificate=True; Trusted_Connection=True;MultipleActiveResultSets=true;
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver
+    ports:
+      - "1433:1433"
+    environment:
+      ACCEPT_EULA: "Y"
+      SA_PASSWORD: "arleliot"
