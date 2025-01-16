@@ -1,8 +1,10 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
 using System.Text;
 using user_service.Data;
+using user_service.Models.DTOs;
 using user_service.Models.Entities;
 
 namespace user_service.Controllers
@@ -11,9 +13,9 @@ namespace user_service.Controllers
     [ApiController]
     public class UserController : ControllerBase
     {
-        private readonly UserContext _context;
+        private readonly UserDbContext _context;
 
-        public UserController(UserContext context)
+        public UserController(UserDbContext context)
         {
             _context = context;
         }
@@ -21,9 +23,19 @@ namespace user_service.Controllers
         // GET: api/User - Returns a list of all users
         [HttpGet]
         //Use ToListAsync() to retrieve data asynchronously.
-        public async Task<ActionResult<IEnumerable<User>>> GetUsers()
+        
+        public async Task<IActionResult> GetUsers()
         {
-            return await _context.Users.ToListAsync();
+            var users = await _context.Users
+                .Select(u => new UserDto
+                {
+                    Id = u.Id,
+                    UserName = u.UserName,
+                    Email = u.Email,
+                    FullName = u.FullName
+                })
+                .ToListAsync();
+            return Ok(users);
         }
 
         // GET: api/User/{id} - Get users informations
@@ -43,27 +55,33 @@ namespace user_service.Controllers
         // POST: api/User - Creates a new user (login)
         [HttpPost()]
         //Returns an HTTP 201 Created code with the new user and its ID.
-        public async Task<ActionResult<User>> CreateUser(User user)
+        public async Task<IActionResult> CreateUser([FromBody] User user)
         {
+            //if (!ModelState.IsValid)
+            //{
+            //    return BadRequest(ModelState);
+            //}
             if (await _context.Users.AnyAsync(u => u.Email == user.Email))
             {
                 return Conflict(new { message = "A user with this email already exists." });
             }
-
+            
             var newUser = new User
             {
                 UserName = user.UserName,
                 PasswordHash = HashPassword(user.PasswordHash),
                 Email = user.Email,
                 FullName = user.FullName,
+                RoleProject = user.RoleProject,
                 PhoneNumber = user.PhoneNumber,
                 Address = user.Address,
             };
 
             _context.Users.Add(newUser);
             await _context.SaveChangesAsync();
-            //    return CreatedAtAction(nameof(GetUser), new { id = newUser.Id }, new { newUser.Id, newUser.UserName });
-            return CreatedAtAction(nameof(GetUser), new { id = newUser.Id }, user);
+            return CreatedAtAction(nameof(GetUser), new { id = newUser.Id }, new { newUser.Id, newUser.UserName });
+            //return CreatedAtAction(nameof(GetUsers), new { id = newUser.Id }, user);
+
         }
 
         // POST: api/User/login - User Authentication
@@ -98,6 +116,8 @@ namespace user_service.Controllers
             user.Email = userUpdate.Email;
             user.FullName = userUpdate.FullName;
             user.UserName = userUpdate.UserName;
+            user.PasswordHash = HashPassword(user.PasswordHash);
+            user.RoleProject = userUpdate.RoleProject;
             user.PhoneNumber = userUpdate.PhoneNumber;
             user.Address = userUpdate.Address;
 

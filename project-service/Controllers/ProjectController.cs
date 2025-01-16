@@ -2,10 +2,13 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using project_service.Data;
+using project_service.Models.DTOs;
 using project_service.Models.Entities;
 using System.Net.Http;
 using System.Text.Json;
+using user_service.Models.DTOs;
 using user_service.Models.Entities;
+using static project_service.Controllers.ProjectController;
 
 namespace project_service.Controllers
 {
@@ -13,55 +16,130 @@ namespace project_service.Controllers
     [ApiController]
     public class ProjectController : ControllerBase
     {
-        private readonly ProjectContext _context;
-        public ProjectController(ProjectContext context)
+        private readonly ProjectDbContext _context;
+        private readonly UserServiceClient _userServiceClient;
+
+        public ProjectController(ProjectDbContext context, UserServiceClient userServiceClient)
         {
             _context = context;
+            _userServiceClient = userServiceClient;
         }
 
-        //GET: api/Project - Returns a list of all projects.
+        // GET: api/Project - Returns a list of all projects.
         [HttpGet]
-        //Uses ToListAsync() to get data asynchronously.
-        public async Task<ActionResult<IEnumerable<Project>>> GetProjects()
+        public async Task<IActionResult> GetProjects()
         {
-            return await _context.Projects.ToListAsync();
+            // Récupérer tous les projets depuis la base de données
+            var projects = await _context.Projects.ToListAsync();
+
+            // Liste pour stocker les projets avec les informations utilisateur
+            var projectDtos = new List<ProjectDto>();
+
+            foreach (var project in projects)
+            {
+                UserDto? userDto = null;
+
+                // Si un UserId est défini, récupérer les informations utilisateur depuis le microservice utilisateur
+                if (project.UserId.HasValue)
+                {
+                    var user = await _userServiceClient.GetUserByIdAsync(project.UserId.Value);
+                    if (user != null)
+                    {
+                        userDto = new UserDto
+                        {
+                            Id = user.Id,
+                            UserName = user.UserName,
+                            Email = user.Email,
+                            FullName = user.FullName
+                        };
+                    }
+                }
+
+                // Ajouter le projet au DTO avec les données utilisateur si disponibles
+                projectDtos.Add(new ProjectDto
+                {
+                    Id = project.Id,
+                    ProjectName = project.ProjectName,
+                    Description = project.Description,
+                    StartDate = project.StartDate,
+                    EndDate = project.EndDate,
+                    IsCompleted = project.IsCompleted,
+                    User = userDto
+                });
+            }
+
+            // Retourner la liste des projets sous forme de DTOs
+            return Ok(projectDtos);
         }
-        
-        //GET: api/Project/{id} - Returns a specific project based on its Id.
+
+
+        // GET: api/Project/{id} - Returns a specific project based on its Id.
         [HttpGet("{id}")]
-        //Returns 404 Not Found if the project does not exist.
-        public async Task<ActionResult<Project>> GetProject(int id)
+        public async Task<IActionResult> GetProject(int id)
         {
-            var project = await _context.Projects.FindAsync(id);
+            var project = await _context.Projects.FirstOrDefaultAsync(p => p.Id == id);
 
             if (project == null)
             {
                 return NotFound();
             }
 
-            return project;
+            User? user = null;
+            if (project.UserId.HasValue)
+            {
+                user = await _userServiceClient.GetUserByIdAsync(project.UserId.Value);
+            }
+
+            var projectDto = new
+            {
+                project.Id,
+                project.ProjectName,
+                project.Description,
+                project.StartDate,
+                project.EndDate,
+                project.IsCompleted,
+                User = user // Ajout des informations utilisateur si disponibles
+            };
+
+            return Ok(projectDto);
         }
 
-        //POST: api/Project - Creates a new project
+
+        // POST: api/Project - Creates a new project.
         [HttpPost]
-        //Returns a 201 Created HTTP code with the created project.
-        public async Task<ActionResult<Project>> CreateProject(Project project)
+        public async Task<IActionResult> CreateProject([FromBody] Project project)
         {
+            if (project.UserId.HasValue)
+            {
+                var user = await _userServiceClient.GetUserByIdAsync(project.UserId.Value);
+                if (user == null)
+                {
+                    return BadRequest($"User with ID {project.UserId.Value} does not exist.");
+                }
+            }
+
             _context.Projects.Add(project);
             await _context.SaveChangesAsync();
 
             return CreatedAtAction(nameof(GetProject), new { id = project.Id }, project);
         }
 
-        //PUT: api/Project/{id} - Updates an existing project
+        // PUT: api/Project/{id} - Updates an existing project.
         [HttpPut("{id}")]
-        //Checks that the ID provided in the URL matches the project ID sent in the request body.
-        //Returns 400 Bad Request if the IDs do not match, or 404 Not Found if the project does not exist.
-        public async Task<IActionResult> UpdateProject(int id, Project project)
+        public async Task<IActionResult> UpdateProject(int id, [FromBody] Project project)
         {
             if (id != project.Id)
             {
-                return BadRequest();
+                return BadRequest("Project ID in the URL does not match the ID in the request body.");
+            }
+
+            if (project.UserId.HasValue)
+            {
+                var user = await _userServiceClient.GetUserByIdAsync(project.UserId.Value);
+                if (user == null)
+                {
+                    return BadRequest($"User with ID {project.UserId.Value} does not exist.");
+                }
             }
 
             _context.Entry(project).State = EntityState.Modified;
@@ -74,7 +152,7 @@ namespace project_service.Controllers
             {
                 if (!ProjectExists(id))
                 {
-                    return NotFound();
+                    return NotFound($"Project with ID {id} not found.");
                 }
                 else
                 {
@@ -84,20 +162,15 @@ namespace project_service.Controllers
 
             return NoContent();
         }
-        private bool ProjectExists(int id)
-        {
-            return _context.Projects.Any(e => e.Id == id);
-        }
 
-        //DELETE /api/Project/{id} - Deletes a project based on its Id
+        // DELETE: api/Project/{id} - Deletes a project based on its Id.
         [HttpDelete("{id}")]
-        //Returns 204 No Content on success or 404 Not Found if the project does not exist
         public async Task<IActionResult> DeleteProject(int id)
         {
             var project = await _context.Projects.FindAsync(id);
             if (project == null)
             {
-                return NotFound();
+                return NotFound($"Project with ID {id} not found.");
             }
 
             _context.Projects.Remove(project);
@@ -106,27 +179,33 @@ namespace project_service.Controllers
             return NoContent();
         }
 
-        //Interaction between Microservices (HTTP Communication)
-        //The ProjectService can call an API exposed by the UserService to validate or retrieve information about users.
-        public class UserServiceClient
+        // Helper method to check if a project exists by ID.
+        private bool ProjectExists(int id)
         {
-            private readonly HttpClient _httpClient;
+            return _context.Projects.Any(e => e.Id == id);
+        }
+    }
 
-            public UserServiceClient(HttpClient httpClient)
-            {
-                _httpClient = httpClient;
-            }
+    // Service for interacting with the UserService API.
+    public class UserServiceClient
+    {
+        private readonly HttpClient _httpClient;
 
-            public async Task<User?> GetUserByIdAsync(int userId)
+        public UserServiceClient(HttpClient httpClient, IConfiguration configuration)
+        {
+            _httpClient = httpClient;
+            _httpClient.BaseAddress = new Uri(configuration["MicroserviceUrls:UserService"]);
+        }
+
+        public async Task<User?> GetUserByIdAsync(int userId)
+        {
+            var response = await _httpClient.GetAsync($"users/{userId}");
+            if (response.IsSuccessStatusCode)
             {
-                var response = await _httpClient.GetAsync($"http://localhost:32775/user-service/api/users/{userId}");
-                if (response.IsSuccessStatusCode)
-                {
-                    var content = await response.Content.ReadAsStringAsync();
-                    return JsonSerializer.Deserialize<User>(content);
-                }
-                return null;
+                var content = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<User>(content);
             }
+            return null;
         }
     }
 

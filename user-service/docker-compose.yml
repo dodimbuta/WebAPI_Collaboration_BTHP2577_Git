@@ -6,24 +6,26 @@ services:
       context: ./user-service
       dockerfile: Dockerfile
     ports:
-      - "5001:80"
-    environment:
-      - ConnectionStrings__DefaultConnection=Server=localhost;Database=MicroServiceBTHDb;TrustServerCertificate=True; Trusted_Connection=True;MultipleActiveResultSets=true;
+      - "8080:8080"
+      - "8081:8081"
 
-  projectservice:
-    build:
-      context: ./project-service
-      dockerfile: Dockerfile
-    ports:
-      - "5002:80"
-    environment:
-      - ConnectionStrings__DefaultConnection=Server=localhost;Database=MicroServiceBTHDb;TrustServerCertificate=True; Trusted_Connection=True;MultipleActiveResultSets=true;
+    environment: 
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Server=sqlserver;Database=MicroServiceBTHDb;User=sa;Password=Arleliot12!;TrustServerCertificate=True;MultipleActiveResultSets=true
+    depends_on:
+      - sqlserver
 
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     container_name: sqlserver
     ports:
       - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
     environment:
       ACCEPT_EULA: "Y"
-      SA_PASSWORD: "arleliot"
+      SA_PASSWORD: "Arleliot12!"
+
+volumes:
+  mssql_data:
+
