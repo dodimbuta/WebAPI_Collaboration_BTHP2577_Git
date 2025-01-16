@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json.Serialization;
 using user_service.Models.Entities;
 
 namespace project_service.Models.Entities
@@ -14,7 +15,8 @@ namespace project_service.Models.Entities
 
         [ForeignKey("User")]
         public int? UserId { get; set; }
-        public User? User { get; set; } // Navigation Property
-  
+        //[NotMapped]
+        //[JsonIgnore]
+        //public User User { get; set; } = null!;// Navigation Property
     }
 }

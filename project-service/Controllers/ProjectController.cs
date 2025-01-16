@@ -1,133 +1,126 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using project_service.Data;
+using project_service.Models.DTOs;
 using project_service.Models.Entities;
-using System.Net.Http;
-using System.Text.Json;
-using user_service.Models.Entities;
+using project_service.Services;
 
-namespace project_service.Controllers
+namespace project_service.Controllers;
+
+[Route("api/[controller]")]
+[ApiController]
+public sealed class ProjectController(ProjectDbContext context, UserServiceClient userServiceClient) : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class ProjectController : ControllerBase
+    [HttpGet]
+    public async Task<ActionResult<IReadOnlyList<ProjectDto>>> GetProjects(CancellationToken cancellationToken)
     {
-        private readonly ProjectContext _context;
-        public ProjectController(ProjectContext context)
+        var projects = await context.Projects.AsNoTracking()
+            .OrderBy(project => project.Id)
+            .ToListAsync(cancellationToken);
+
+        var results = new List<ProjectDto>(projects.Count);
+        foreach (var project in projects)
         {
-            _context = context;
+            var user = project.UserId.HasValue
+                ? await userServiceClient.GetUserByIdAsync(project.UserId.Value, cancellationToken)
+                : null;
+            results.Add(ToDto(project, user));
         }
 
-        //GET: api/Project - Returns a list of all projects.
-        [HttpGet]
-        //Uses ToListAsync() to get data asynchronously.
-        public async Task<ActionResult<IEnumerable<Project>>> GetProjects()
-        {
-            return await _context.Projects.ToListAsync();
-        }
-        
-        //GET: api/Project/{id} - Returns a specific project based on its Id.
-        [HttpGet("{id}")]
-        //Returns 404 Not Found if the project does not exist.
-        public async Task<ActionResult<Project>> GetProject(int id)
-        {
-            var project = await _context.Projects.FindAsync(id);
-
-            if (project == null)
-            {
-                return NotFound();
-            }
-
-            return project;
-        }
-
-        //POST: api/Project - Creates a new project
-        [HttpPost]
-        //Returns a 201 Created HTTP code with the created project.
-        public async Task<ActionResult<Project>> CreateProject(Project project)
-        {
-            _context.Projects.Add(project);
-            await _context.SaveChangesAsync();
-
-            return CreatedAtAction(nameof(GetProject), new { id = project.Id }, project);
-        }
-
-        //PUT: api/Project/{id} - Updates an existing project
-        [HttpPut("{id}")]
-        //Checks that the ID provided in the URL matches the project ID sent in the request body.
-        //Returns 400 Bad Request if the IDs do not match, or 404 Not Found if the project does not exist.
-        public async Task<IActionResult> UpdateProject(int id, Project project)
-        {
-            if (id != project.Id)
-            {
-                return BadRequest();
-            }
-
-            _context.Entry(project).State = EntityState.Modified;
-
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                if (!ProjectExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
-
-            return NoContent();
-        }
-        private bool ProjectExists(int id)
-        {
-            return _context.Projects.Any(e => e.Id == id);
-        }
-
-        //DELETE /api/Project/{id} - Deletes a project based on its Id
-        [HttpDelete("{id}")]
-        //Returns 204 No Content on success or 404 Not Found if the project does not exist
-        public async Task<IActionResult> DeleteProject(int id)
-        {
-            var project = await _context.Projects.FindAsync(id);
-            if (project == null)
-            {
-                return NotFound();
-            }
-
-            _context.Projects.Remove(project);
-            await _context.SaveChangesAsync();
-
-            return NoContent();
-        }
-
-        //Interaction between Microservices (HTTP Communication)
-        //The ProjectService can call an API exposed by the UserService to validate or retrieve information about users.
-        public class UserServiceClient
-        {
-            private readonly HttpClient _httpClient;
-
-            public UserServiceClient(HttpClient httpClient)
-            {
-                _httpClient = httpClient;
-            }
-
-            public async Task<User?> GetUserByIdAsync(int userId)
-            {
-                var response = await _httpClient.GetAsync($"http://localhost:32775/user-service/api/users/{userId}");
-                if (response.IsSuccessStatusCode)
-                {
-                    var content = await response.Content.ReadAsStringAsync();
-                    return JsonSerializer.Deserialize<User>(content);
-                }
-                return null;
-            }
-        }
+        return Ok(results);
     }
 
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<ProjectDto>> GetProject(int id, CancellationToken cancellationToken)
+    {
+        var project = await context.Projects.AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (project is null)
+            return NotFound(new { message = $"Project with ID {id} was not found." });
+
+        var user = project.UserId.HasValue
+            ? await userServiceClient.GetUserByIdAsync(project.UserId.Value, cancellationToken)
+            : null;
+        return Ok(ToDto(project, user));
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<ProjectDto>> CreateProject(
+        [FromBody] ProjectWriteDto request, CancellationToken cancellationToken)
+    {
+        if (request.EndDate < request.StartDate)
+            return BadRequest(new { message = "EndDate must be on or after StartDate." });
+
+        var user = await FindUserAsync(request.UserId, cancellationToken);
+        if (request.UserId.HasValue && user is null)
+            return BadRequest(new { message = $"User with ID {request.UserId.Value} does not exist." });
+
+        var project = new Project
+        {
+            ProjectName = request.ProjectName.Trim(),
+            Description = request.Description.Trim(),
+            StartDate = request.StartDate,
+            EndDate = request.EndDate,
+            IsCompleted = request.IsCompleted,
+            UserId = request.UserId
+        };
+
+        context.Projects.Add(project);
+        await context.SaveChangesAsync(cancellationToken);
+        return CreatedAtAction(nameof(GetProject), new { id = project.Id }, ToDto(project, user));
+    }
+
+    [HttpPut("{id:int}")]
+    public async Task<IActionResult> UpdateProject(
+        int id, [FromBody] ProjectWriteDto request, CancellationToken cancellationToken)
+    {
+        if (request.EndDate < request.StartDate)
+            return BadRequest(new { message = "EndDate must be on or after StartDate." });
+
+        var project = await context.Projects.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (project is null)
+            return NotFound(new { message = $"Project with ID {id} was not found." });
+
+        var user = await FindUserAsync(request.UserId, cancellationToken);
+        if (request.UserId.HasValue && user is null)
+            return BadRequest(new { message = $"User with ID {request.UserId.Value} does not exist." });
+
+        project.ProjectName = request.ProjectName.Trim();
+        project.Description = request.Description.Trim();
+        project.StartDate = request.StartDate;
+        project.EndDate = request.EndDate;
+        project.IsCompleted = request.IsCompleted;
+        project.UserId = request.UserId;
+
+        await context.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> DeleteProject(int id, CancellationToken cancellationToken)
+    {
+        var project = await context.Projects.FindAsync(new object[] { id }, cancellationToken);
+        if (project is null)
+            return NotFound(new { message = $"Project with ID {id} was not found." });
+
+        context.Projects.Remove(project);
+        await context.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    private Task<user_service.Models.DTOs.UserDto?> FindUserAsync(int? userId, CancellationToken cancellationToken) =>
+        userId.HasValue
+            ? userServiceClient.GetUserByIdAsync(userId.Value, cancellationToken)
+            : Task.FromResult<user_service.Models.DTOs.UserDto?>(null);
+
+    private static ProjectDto ToDto(Project project, user_service.Models.DTOs.UserDto? user) => new()
+    {
+        Id = project.Id,
+        ProjectName = project.ProjectName,
+        Description = project.Description,
+        StartDate = project.StartDate,
+        EndDate = project.EndDate,
+        IsCompleted = project.IsCompleted,
+        User = user
+    };
 }
