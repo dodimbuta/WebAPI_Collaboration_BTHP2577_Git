@@ -1,146 +1,150 @@
-﻿using Microsoft.AspNetCore.Identity;
+﻿using System.Security.Cryptography;
+using System.Text;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Cryptography;
-using System.Text;
 using user_service.Data;
 using user_service.Models.DTOs;
 using user_service.Models.Entities;
 
-namespace user_service.Controllers
+namespace user_service.Controllers;
+
+[Route("api/[controller]")]
+[ApiController]
+public sealed class UserController(UserDbContext context) : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class UserController : ControllerBase
+    private readonly PasswordHasher<User> _passwordHasher = new();
+
+    [HttpGet]
+    public async Task<ActionResult<IReadOnlyList<UserDto>>> GetUsers(CancellationToken cancellationToken)
     {
-        private readonly UserDbContext _context;
-
-        public UserController(UserDbContext context)
-        {
-            _context = context;
-        }
-
-        // GET: api/User - Returns a list of all users
-        [HttpGet]
-        //Use ToListAsync() to retrieve data asynchronously.
-
-        public async Task<IActionResult> GetUsers()
-        {
-            var users = await _context.Users
-                .Select(u => new UserDto
-                {
-                    Id = u.Id,
-                    UserName = u.UserName,
-                    Email = u.Email,
-                    FullName = u.FullName
-                })
-                .ToListAsync();
-            return Ok(users);
-        }
-
-        // GET: api/User/{id} - Get users informations
-        [HttpGet("user/{id}")]
-        //Returns a specific user based on its Id.
-        //Returns a HTTP 404 Not Found code if the user does not exist.
-        public async Task<ActionResult<User>> GetUser(int id)
-        {
-            //var user = await _context.Users.GetUserById(id);
-            var user = await _context.Users.FindAsync(id);
-            //return user != null ? Ok(user) : NotFound();
-            if (user == null)
-                return NotFound("User not found.");
-            return user;
-        }
-
-        // POST: api/User - Creates a new user (login)
-        [HttpPost()]
-        //Returns an HTTP 201 Created code with the new user and its ID.
-        public async Task<IActionResult> CreateUser([FromBody] User user)
-        {
-            //if (!ModelState.IsValid)
-            //{
-            //    return BadRequest(ModelState);
-            //}
-            if (await _context.Users.AnyAsync(u => u.Email == user.Email))
+        var users = await context.Users.AsNoTracking()
+            .OrderBy(user => user.Id)
+            .Select(user => new UserDto
             {
-                return Conflict(new { message = "A user with this email already exists." });
-            }
-
-            var newUser = new User
-            {
+                Id = user.Id,
                 UserName = user.UserName,
-                PasswordHash = HashPassword(user.PasswordHash),
                 Email = user.Email,
-                FullName = user.FullName,
-                RoleProject = user.RoleProject,
-                PhoneNumber = user.PhoneNumber,
-                Address = user.Address,
-            };
-
-            _context.Users.Add(newUser);
-            await _context.SaveChangesAsync();
-            return CreatedAtAction(nameof(GetUser), new { id = newUser.Id }, new { newUser.Id, newUser.UserName });
-            //return CreatedAtAction(nameof(GetUsers), new { id = newUser.Id }, user);
-
-        }
-
-        // POST: api/User/login - User Authentication
-        [HttpPost("login")]
-        public async Task<IActionResult> Login(User login)
-        {
-            var user = await _context.Users.SingleOrDefaultAsync(u => u.UserName == login.UserName);
-
-            if (user == null || user.PasswordHash != HashPassword(login.PasswordHash))
-                return Unauthorized("UserName or Password is not correct.");
-
-            return Ok(new { user.Id, user.UserName });
-        }
-        // Password hashing method
-        private string HashPassword(string password)
-        {
-            using var sha256 = SHA256.Create();
-            byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
-            return Convert.ToBase64String(bytes);
-        }
-
-        // PUT: api/User/{id} - Updates an existing user
-        [HttpPut("user/{id}")]
-        //Verifies that the ID provided in the URL matches the user ID in the request body.
-        //Returns 400 Bad Request if the IDs don't match, or 404 Not Found if the user doesn't exist.
-        public async Task<IActionResult> UpdateUser(int id, User userUpdate)
-        {
-            var user = await _context.Users.FindAsync(id);
-            if (user == null)
-                return NotFound("User not found.");
-
-            user.Email = userUpdate.Email;
-            user.FullName = userUpdate.FullName;
-            user.UserName = userUpdate.UserName;
-            user.PasswordHash = HashPassword(user.PasswordHash);
-            user.RoleProject = userUpdate.RoleProject;
-            user.PhoneNumber = userUpdate.PhoneNumber;
-            user.Address = userUpdate.Address;
-
-            _context.Users.Update(user);
-            await _context.SaveChangesAsync();
-
-            return Ok(await _context.Users.ToListAsync());
-        }
-
-        //DELETE: api/User/user/{id} - Deletes a user based on their Id
-        [HttpDelete("user/{id}")]
-        //Returns 204 No Content on success or 404 Not Found if the user does not exist.
-        public async Task<IActionResult> DeleteUser(int id)
-        {
-            var user = await _context.Users.FindAsync(id);
-            if (user == null)
-                return NotFound("User not found");
-
-            _context.Users.Remove(user);
-            await _context.SaveChangesAsync();
-
-            return Ok(await _context.Users.ToListAsync());
-        }
-
+                FullName = user.FullName
+            })
+            .ToListAsync(cancellationToken);
+        return Ok(users);
     }
+
+    [HttpGet("user/{id:int}")]
+    public async Task<ActionResult<UserDto>> GetUser(int id, CancellationToken cancellationToken)
+    {
+        var user = await context.Users.AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        return user is null ? NotFound(new { message = "User not found." }) : Ok(ToDto(user));
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<UserDto>> CreateUser(
+        [FromBody] UserRegistrationDto request, CancellationToken cancellationToken)
+    {
+        var normalizedEmail = request.Email.Trim();
+        var normalizedUserName = request.UserName.Trim();
+        if (await context.Users.AnyAsync(user => user.Email == normalizedEmail || user.UserName == normalizedUserName, cancellationToken))
+            return Conflict(new { message = "A user with this username or email already exists." });
+
+        var user = new User
+        {
+            UserName = normalizedUserName,
+            PasswordHash = string.Empty,
+            Email = normalizedEmail,
+            FullName = request.FullName.Trim(),
+            RoleProject = request.RoleProject.Trim(),
+            PhoneNumber = request.PhoneNumber.Trim(),
+            Address = request.Address.Trim()
+        };
+        user.PasswordHash = _passwordHasher.HashPassword(user, request.Password);
+
+        context.Users.Add(user);
+        await context.SaveChangesAsync(cancellationToken);
+        return CreatedAtAction(nameof(GetUser), new { id = user.Id }, ToDto(user));
+    }
+
+    [HttpPost("login")]
+    public async Task<IActionResult> Login([FromBody] UserLoginDto request, CancellationToken cancellationToken)
+    {
+        var user = await context.Users.SingleOrDefaultAsync(
+            item => item.UserName == request.UserName.Trim(), cancellationToken);
+        if (user is null || !VerifyPassword(user, request.Password))
+            return Unauthorized(new { message = "Username or password is incorrect." });
+
+        // Upgrade hashes created by the previous SHA-256 implementation after a successful login.
+        if (!user.PasswordHash.StartsWith("AQAAAA", StringComparison.Ordinal))
+        {
+            user.PasswordHash = _passwordHasher.HashPassword(user, request.Password);
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        return Ok(new { user.Id, user.UserName });
+    }
+
+    [HttpPut("user/{id:int}")]
+    public async Task<IActionResult> UpdateUser(
+        int id, [FromBody] UserUpdateDto request, CancellationToken cancellationToken)
+    {
+        var user = await context.Users.FindAsync(new object[] { id }, cancellationToken);
+        if (user is null)
+            return NotFound(new { message = "User not found." });
+
+        var email = request.Email.Trim();
+        var username = request.UserName.Trim();
+        if (await context.Users.AnyAsync(item => item.Id != id &&
+            (item.Email == email || item.UserName == username), cancellationToken))
+            return Conflict(new { message = "Another user already uses this username or email." });
+
+        user.Email = email;
+        user.UserName = username;
+        user.FullName = request.FullName.Trim();
+        user.RoleProject = request.RoleProject.Trim();
+        user.PhoneNumber = request.PhoneNumber.Trim();
+        user.Address = request.Address.Trim();
+        if (!string.IsNullOrWhiteSpace(request.Password))
+            user.PasswordHash = _passwordHasher.HashPassword(user, request.Password);
+
+        await context.SaveChangesAsync(cancellationToken);
+        return Ok(ToDto(user));
+    }
+
+    [HttpDelete("user/{id:int}")]
+    public async Task<IActionResult> DeleteUser(int id, CancellationToken cancellationToken)
+    {
+        var user = await context.Users.FindAsync(new object[] { id }, cancellationToken);
+        if (user is null)
+            return NotFound(new { message = "User not found." });
+
+        context.Users.Remove(user);
+        await context.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    private bool VerifyPassword(User user, string password)
+    {
+        // ASP.NET Identity hashes use a version marker. Check it before parsing the hash,
+        // because legacy SHA-256 values are also stored as base64 strings.
+        if (user.PasswordHash.StartsWith("AQAAAA", StringComparison.Ordinal))
+        {
+            return _passwordHasher.VerifyHashedPassword(user, user.PasswordHash, password)
+                != PasswordVerificationResult.Failed;
+        }
+
+        // Backward compatibility with existing SHA-256/base64 hashes.
+        var legacyHash = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(password)));
+        var storedHashBytes = Encoding.UTF8.GetBytes(user.PasswordHash);
+        var legacyHashBytes = Encoding.UTF8.GetBytes(legacyHash);
+        return storedHashBytes.Length == legacyHashBytes.Length &&
+               CryptographicOperations.FixedTimeEquals(storedHashBytes, legacyHashBytes);
+    }
+
+    private static UserDto ToDto(User user) => new()
+    {
+        Id = user.Id,
+        UserName = user.UserName,
+        Email = user.Email,
+        FullName = user.FullName
+    };
 }
